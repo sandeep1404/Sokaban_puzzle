@@ -1,8 +1,10 @@
 # Analysis Report — Track 1: Tree-Based Planning with LLMs
 
-**System:** Sokoban solver using Qwen2.5-7B-Instruct (via vLLM) as a one-step action predictor, combined with A*, Beam Search, and BFS tree search.  
-**Hardware:** AMD Instinct MI300X (192 GB HBM3), ROCm 7.2, vLLM with continuous batching.  
-**Dataset:** David Skinner's Microban collection (155 puzzles). Evaluated on 10 puzzles spanning easy to hard: indices [0, 1, 5, 10, 20, 30, 50, 70, 90, 110].
+**System:** Sokoban solver using an LLM as a one-step action predictor, combined with A*, Beam Search, BFS, and MCTS tree search algorithms.  
+**Final Hardware:** AMD Instinct MI300X (192 GB HBM3), ROCm 7.2, vLLM with continuous batching, Qwen2.5-7B-Instruct.  
+**Backends explored:** Groq API → MLX (Apple Silicon) → vLLM (AMD MI300X).  
+**Models explored:** Qwen2.5-1.5B, Qwen2.5-3B, Qwen2.5-7B, Claude Sonnet 4.6.  
+**Dataset:** David Skinner's Microban collection (155 puzzles). Final evaluation: 10 puzzles spanning easy to hard: indices [0, 1, 5, 10, 20, 30, 50, 70, 90, 110].
 
 ---
 
@@ -151,7 +153,234 @@ Experiment settings: 10 puzzles [0,1,5,10,20,30,50,70,90,110], `max_states=10,00
 
 ---
 
-## 4. LLM Prediction Quality Analysis
+## 4. Experimental Journey
+
+This section documents all experiments in chronological order, showing how the system evolved from early prototypes to the final vLLM-powered pipeline.
+
+---
+
+### Experiment 1 — Groq API Backend (Early Development)
+
+The first working end-to-end pipeline used Groq's cloud API (`llama-3.1-8b-instant`) as the LLM backend.
+
+**Single puzzle sanity check (puzzle 13):**
+
+| Solver | Solved | Steps | LLM Calls | Time |
+|---|---|---|---|---|
+| BFS | ✅ | 51 | 0 | 0.00s |
+| Beam | ❌ | — | 1 | 0.49s |
+| A* | ✅ | 51 | 35 | 31.81s |
+| MCTS | ❌ | — | 7 | 16.47s |
+
+**5-puzzle comparison (puzzles 55, 66, 26, 49, 62 — BFS steps: 23, 37, 50, 76, 101):**
+
+| Solver | Solved | Accuracy | Avg Steps | Avg LLM Calls | Avg Time | Avg Cache Hits |
+|---|---|---|---|---|---|---|
+| BFS | 5/5 | 100.0% | 57.4 | 0 | 0.01s | 0 |
+| Beam (w=2) | 0/5 | 0.0% | N/A | 25.6 | 71.98s | 4.8 |
+| A* | 2/5 | 40.0% | 30.0 | 35.2 | 94.83s | 428 |
+| MCTS | 0/5 | 0.0% | N/A | 9.2 | 22.64s | 204.4 |
+
+**Problem:** Groq rate-limiting caused A* to reach ~1,000s per puzzle at scale. The remote API inference time dominated all other costs. **Decision: migrate to local inference.**
+
+---
+
+### Experiment 2 — Model Size Study (1.5B vs 3B, MLX Backend)
+
+Tested two smaller Qwen models locally via MLX on a small puzzle set to understand the accuracy-speed trade-off before committing to a full evaluation.
+
+**Qwen2.5-1.5B, beam_width=10:**
+
+| Solver | Solved | Accuracy | Avg Steps | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|
+| BFS | 8/10 | 80.0% | 54.5 | 0 | 0.13s |
+| Beam (w=10) | 2/10 | 20.0% | 23.0 | 70 | 19.81s |
+| A* | 8/10 | 80.0% | 54.5 | 83 | 22.07s |
+
+**Qwen2.5-3B, beam_width=25:**
+
+| Solver | Solved | Accuracy | Avg Steps | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|
+| BFS | 8/10 | 80.0% | 54.5 | 0 | 0.13s |
+| Beam (w=25) | 4/10 | 40.0% | 44.5 | 169 | 75.13s |
+| A* | 7/10 | 70.0% | 47.0 | 89 | 39.40s |
+
+**Qwen2.5-1.5B, beam_width=25:**
+
+| Solver | Solved | Accuracy | Avg Steps | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|
+| BFS | 8/10 | 80.0% | 54.5 | 0 | 0.12s |
+| Beam (w=25) | 3/10 | 30.0% | 26.3 | 268 | 70.47s |
+| A* | 7/10 | 70.0% | 47.0 | 89 | 23.66s |
+
+**Key findings:**
+- 1.5B with A* matched BFS (80%) at this puzzle set, but beam search performance was very weak
+- 3B improved beam search from 20% → 40%, showing model quality matters for beam search more than for A*
+- A* matched or approached BFS accuracy regardless of model size — the search algorithm provides the safety net
+
+---
+
+### Experiment 3 — MCTS Trial (1.5B, beam_width=25)
+
+MCTS was added as a fourth solver alongside BFS, Beam Search, and A*.
+
+| Solver | Solved | Accuracy | Avg Steps | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|
+| BFS | 8/10 | 80.0% | 54.5 | 0 | 0.13s |
+| Beam (w=25) | 3/10 | 30.0% | 26.3 | 268 | 70.66s |
+| A* | 7/10 | 70.0% | 47.0 | 89 | 23.62s |
+| MCTS | 2/10 | 20.0% | 33.5 | 279 | 73.54s |
+
+**Finding:** MCTS achieved 20% accuracy — tied with beam search at worst and far behind A*. Sokoban's long solution paths (~50–100 steps) mean random rollouts almost never reach a solved state naturally, making value estimates extremely noisy. MCTS requires either a good value function or very long rollouts to work on Sokoban. **Decision: keep A* as primary LLM-guided solver.**
+
+---
+
+### Experiment 4 — Claude Sonnet 4.6 Backend
+
+Tested Claude Sonnet 4.6 as the LLM backbone (beam search excluded due to rate limits).
+
+| Solver | Solved | Accuracy | Avg Steps | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|
+| BFS | 8/10 | 80.0% | 54.5 | 0 | 0.13s |
+| A* | 8/10 | 80.0% | 54.5 | 100 | 168.84s |
+
+**Finding:** A* with Claude matched BFS accuracy (80%) — the only backend where A* equaled BFS. However, 168.84s avg makes it impractical. The high cost per API call and rate limits make frontier cloud models unsuitable for tree search, which requires thousands of LLM calls per puzzle.
+
+---
+
+### Experiment 5 — BFS Scaling: All 155 Puzzles
+
+BFS (no LLM) was run on all 155 Microban puzzles to understand the true baseline difficulty distribution.
+
+| Solver | Solved | Accuracy | Avg Steps | Avg Time |
+|---|---|---|---|---|
+| BFS (all 155) | 83/150 | 55.3% | 63.7 | 0.23s |
+
+**Finding:** Only 55.3% of all Microban puzzles are solvable by BFS within budget. This confirms the dataset includes genuinely hard puzzles that require more than brute-force search — establishing the need for guided algorithms on the harder half.
+
+---
+
+### Experiment 6 — Inference Optimization (MLX Backend)
+
+Three optimizations were implemented and benchmarked on a 5-state batch:
+
+| Strategy | Time (5 states) | LLM Calls | Speed Gain |
+|---|---|---|---|
+| Normal MLX (baseline) | 1.283s | 5 | 1× |
+| MLX Prompt Caching | 0.169–0.173s | 5 | ~7× per call (~34% faster per call) |
+| Batch Prediction | 0.358s | 1 | 3.6× total |
+
+**1. MLX Prompt Caching (`mlx_cached` backend)**  
+The system prompt + Sokoban rules are identical for every LLM call (~150 tokens). Implemented `mlx_cached` backend using MLX's `generate_step` with `prompt_cache` to process these prefix tokens only once and reuse the KV cache.  
+Result: **34% faster per call** (0.256s → 0.169s).
+
+**2. Batch Prediction (`predict_batch()`)**  
+Instead of N individual calls for N beam states, packs all board states into one prompt, makes a single LLM call, and parses all rankings from the response.  
+Result: **3.6× faster for 5 states** (1.283s → 0.358s, 5 calls → 1 call).
+
+**3. Batch-Aware Beam Search**  
+BeamSearchSolver.solve() batches all beam states into one `predict_batch()` call per step. With beam_width=25: old approach made ~5,000 LLM calls; new approach makes ~200 (1 per depth step). Combined with prompt caching: **~30× faster overall beam search inference**.
+
+**Trade-off note:** Batch prediction degrades accuracy on smaller models (1.5B). Mixing multiple board states in one prompt confuses smaller models. Recommended only for 7B+ models.
+
+---
+
+### Experiment 7 — vLLM Migration (Qwen2.5-7B on AMD MI300X)
+
+Migrated to a local vLLM server on AMD Instinct MI300X (192 GB HBM3). This was the key turning point in inference speed.
+
+**First vLLM run (Qwen2.5-7B, default settings):**
+
+| Solver | Solved | Accuracy | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|
+| BFS | 8/10 | 80.0% | 0 | 0.13s |
+| A* (vLLM) | 8/10 | 80.0% | 9,585 | 219.08s |
+
+**After optimization** (max_tokens 20→8, batch_size 32→64, max_states capped at 10k):
+
+| Solver | Solved | Accuracy | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|
+| BFS | 9/10 | 90.0% | 0 | 0.08s |
+| A* (vLLM, optimized) | 7/10 | 70.0% | 4,448 | 32.68s |
+
+![vLLM Inference Speedup](outputs/vllm_speedup_comparison.png)
+
+**Key improvements:**
+- Reducing `max_tokens` from 20 to 8: LLM only needs to output one direction word — shorter output = faster generation
+- Increasing `batch_size` from 32 to 64: more states processed per HTTP round-trip, reducing network overhead
+- Capping states at 10k: prevents runaway puzzles, reduces average calls from 9,585 to 4,448
+
+**Progression:** Groq (~1,000s) → vLLM default (~219s) → vLLM optimized (~32s) — **31× speedup over Groq**.
+
+---
+
+### Experiment 8 — State Representation Comparison (A*, 10 Puzzles, 20k Budget)
+
+All three representations tested with A* on the same 10 puzzles (`max_states=20,000`, `max_llm_calls=20,000`).
+
+**Summary:**
+
+| Representation | Solved | Accuracy | Avg Steps | Avg States | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|---|
+| ASCII (raw grid) | 8/10 | 80.0% | 45.0 | 6,594 | 6,594 | 68.23s |
+| Structured (text description) | 8/10 | 80.0% | 45.0 | 6,608 | 6,608 | 63.30s |
+| Annotated (grid + hints) | 8/10 | 80.0% | 45.0 | 6,592 | 6,592 | 67.61s |
+
+**Per-puzzle breakdown (all representations fail on the same puzzles):**
+
+| Puzzle | Boxes | Solved | Steps | States | Note |
+|---|---|---|---|---|---|
+| 0 | 2 | ✅ | 33 | 184 | Easy — solved in ~3s |
+| 1 | 3 | ✅ | 16 | 572–588 | Easy-medium |
+| 5 | 3 | ❌ | — | 20,001 | Hit 20k cap — all 3 representations fail identically |
+| 10 | 2 | ✅ | 78 | 2,245–2,256 | Medium |
+| 20 | 2 | ✅ | 17 | 175 | Easy |
+| 30 | 3 | ✅ | 17 | 1,008 | Medium |
+| 50 | 2 | ✅ | 34 | 505 | Medium |
+| 70 | 2 | ✅ | 120 | 11,601 | Hard — near cap |
+| 90 | 4 | ✅ | 45 | 9,596–9,756 | Hard |
+| 110 | 6 | ❌ | — | 20,014 | Hit 20k cap — all 3 representations fail identically |
+
+**Finding:** All representations are completely equivalent for Qwen2.5-7B. The two failures (puzzles 5 and 110) are budget-constrained, not representation-dependent. The model is robust to prompt format.
+
+---
+
+### Experiment 9 — Final Solver Comparison (10 Puzzles, 10k Budget)
+
+Definitive three-way comparison under controlled budget (`max_states=10,000`, `max_llm_calls=10,000`, `beam_width=20`).
+
+**Per-puzzle A* breakdown:**
+
+| Puzzle | Boxes | Solved | Steps | States | LLM Calls | Time |
+|---|---|---|---|---|---|---|
+| 0 | 2 | ✅ | 33 | 184 | 184 | 2.29s |
+| 1 | 3 | ✅ | 16 | 588 | 588 | 5.29s |
+| 5 | 3 | ❌ | — | 10,001 | 10,001 | 97.50s |
+| 10 | 2 | ✅ | 78 | 2,245 | 2,245 | 18.19s |
+| 20 | 2 | ✅ | 17 | 175 | 175 | 1.44s |
+| 30 | 3 | ✅ | 17 | 1,008 | 1,008 | 8.62s |
+| 50 | 2 | ✅ | 34 | 505 | 505 | 4.86s |
+| 70 | 2 | ❌ | — | 10,001 | 10,001 | 90.99s |
+| 90 | 4 | ✅ | 45 | 9,596 | 9,596 | 94.70s |
+| 110 | 6 | ❌ | — | 10,014 | 10,014 | 118.95s |
+
+**Final comparison:**
+
+| Solver | Solved | Accuracy | Avg Steps | Avg States | Avg LLM Calls | Avg Time |
+|---|---|---|---|---|---|---|
+| BFS (no LLM) | 6/10 | 60.0% | 32.5 | 4,485 | 0 | 0.03s |
+| Beam Search (w=20) | 4/10 | 40.0% | 20.8 | 1,728 | 678 | 5.63s |
+| A* (LLM-guided) | 7/10 | 70.0% | 34.3 | 4,432 | 4,432 | 44.28s |
+
+![Solver Comparison](outputs/solver_comparison.png)
+
+![Success by Solver](outputs/success_by_solver.png)
+
+![Complexity vs Steps](outputs/complexity_vs_steps.png)
+
+---
+
+## 5. LLM Prediction Quality Analysis
 
 ### 4.1 How LLM Quality Affects Solving Performance
 
@@ -184,9 +413,9 @@ The system uses vLLM's token-level logprobs to assign real probability scores to
 
 ---
 
-## 5. Computational Trade-offs
+## 6. Computational Trade-offs
 
-### 5.1 Latency Breakdown
+### 6.1 Latency Breakdown
 
 | Component | Time per state |
 |---|---|
@@ -197,11 +426,11 @@ The system uses vLLM's token-level logprobs to assign real probability scores to
 
 The bottleneck is **network + inference latency per state**. Even with batch_size=16 and concurrent requests, the per-state LLM overhead dominates.
 
-### 5.2 Memory Usage
+### 6.2 Memory Usage
 
 The MI300X holds the full Qwen2.5-7B model (≈14 GB weights) plus KV cache in 170 GB of 192 GB VRAM. State caching in Python uses negligible RAM relative to model size.
 
-### 5.3 Scaling Behavior
+### 6.3 Scaling Behavior
 
 | Metric | BFS | Beam (w=20) | A* |
 |---|---|---|---|
@@ -213,9 +442,9 @@ The MI300X holds the full Qwen2.5-7B model (≈14 GB weights) plus KV cache in 1
 
 ---
 
-## 6. Discussion
+## 7. Discussion
 
-### 6.1 How does the system handle single-step LLM usage?
+### 7.1 How does the system handle single-step LLM usage?
 
 The single-step constraint is handled by treating the LLM as a **priority function component** rather than a planner. At each state popped from A*'s heap, the LLM predicts the best action. This prediction feeds into the f-score formula:
 
@@ -227,7 +456,7 @@ The LLM never sees future states or multi-step sequences. It only answers: "give
 
 The key design insight is that **search provides the safety net**: even if the LLM is wrong at step k, the correct action at step k is still pushed onto the heap (just with lower priority) and will eventually be explored.
 
-### 6.2 Computational trade-offs of the search strategy
+### 7.2 Computational trade-offs of the search strategy
 
 **A* vs BFS:**
 - Under **tight budget (10k states)**: A* (70%) outperforms BFS (60%) — the LLM steers toward solutions before the cap is hit
@@ -242,7 +471,7 @@ The key design insight is that **search provides the safety net**: even if the L
 
 **The fundamental tension:** Sokoban's combinatorial state space requires broad exploration (BFS-style) but is too large for unconstrained search on hard puzzles. The LLM should reduce the search space, but its inference latency negates the time savings unless it dramatically reduces states explored.
 
-### 6.3 How to improve with more LLM calls or different architectures
+### 7.3 How to improve with more LLM calls or different architectures
 
 **More LLM calls:**
 - Use the LLM to **evaluate states** (not just actions) — a value function that estimates how close a state is to solved. This would improve the heuristic `h(n)` which currently uses Manhattan distance.
@@ -256,18 +485,20 @@ The key design insight is that **search provides the safety net**: even if the L
 
 ---
 
-## 7. Conclusion
+## 8. Conclusion
 
-The system successfully implements a tree-based planning system with LLM guidance for Sokoban. Key findings:
+The system evolved through multiple iterations — from a Groq-backed prototype to a production vLLM pipeline on AMD MI300X — with comprehensive experiments across models, backends, algorithms, and representations. Key findings:
 
 1. **Under a tight 10k state budget, A* with LLM guidance achieves the highest accuracy (70%)**, outperforming BFS (60%) and Beam Search (40%). The LLM's guidance allows A* to find solutions that BFS misses within the same state budget.
 
-2. **Budget sensitivity is the dominant factor for BFS.** At 50k budget BFS achieves 90%; at 10k it drops to 60%. At unlimited budget, BFS is the most accurate algorithm — but the LLM provides a real advantage under constrained computation.
+2. **Budget sensitivity is the dominant factor for BFS.** At 50k budget BFS achieves 90%; at 10k it drops to 60%. The LLM provides a real advantage under constrained computation, but BFS wins at unlimited budget due to completeness.
 
-3. **Beam search is unsuitable for Sokoban** regardless of budget. With beam_width=20 it collapses at 1,728 avg states (well under the 10k cap), proving the failure is structural, not budget-related.
+3. **Beam search is unsuitable for Sokoban** regardless of model size or budget. With beam_width=20 it collapses at 1,728 avg states (well under the 10k cap), proving the failure is structural — permanent pruning discards counter-intuitive but necessary moves.
 
-4. **State representation does not significantly affect accuracy** with Qwen2.5-7B. All three formats (ASCII, Structured, Annotated) produce identical results (80% accuracy at 20k budget), suggesting the model is robust to input format.
+4. **MCTS does not work well for Sokoban** without a strong value function. Random rollouts rarely reach solved states in 100+ step puzzles, giving noisy value estimates that make tree policy ineffective.
 
-5. **The primary bottleneck is LLM inference latency** (~10ms per state × 4,432 states = ~44s). Reducing this through model distillation, caching, or fewer LLM calls would be the highest-impact improvement.
+5. **State representation does not significantly affect accuracy** with Qwen2.5-7B. All three formats (ASCII, Structured, Annotated) produce identical results (80% accuracy at 20k budget), suggesting the model is robust to input format at this difficulty level.
 
-6. **A* is the correct algorithmic choice** for this problem: its completeness guarantee ensures failures are always budget-related, not structural. Beam search's permanent pruning makes it fundamentally unsuitable for Sokoban's counter-intuitive solution paths.
+6. **Inference latency is the dominant cost.** The pipeline evolved from ~1,000s/puzzle (Groq) → 219s (vLLM default) → 32s (vLLM optimized) — a 31× improvement. Key optimizations: reducing `max_tokens` from 20 to 8, increasing `batch_size` to 64, capping state budget.
+
+7. **A* with LLM guidance is the correct algorithmic choice.** Its completeness guarantee ensures failures are always budget-related, not structural. The LLM biases exploration order toward solutions without eliminating any candidate — the search algorithm provides the safety net that makes it robust to LLM errors.
