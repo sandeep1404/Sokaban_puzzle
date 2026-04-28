@@ -1,0 +1,22 @@
+# Track 1 — Tree-Based Planning with LLMs
+# Install: pip install -r requirements.txt
+
+# LLM inference — vLLM OpenAI-compatible client
+openai>=1.0.0
+
+# Plotting for evaluation charts
+matplotlib>=3.7.0
+
+# PDF reading (used for PDF extraction only, not required at runtime)
+pdfplumber>=0.10.0
+
+# Standard library only — no extra deps needed for:
+#   parser.py, environment.py, representation.py, search.py
+#   (uses: pathlib, dataclasses, heapq, collections, re, json, threading, concurrent.futures)
+
+# ──────────────────────────────────────────────
+# vLLM server (runs separately, not pip-installed here)
+# The vLLM inference server must be started before running any LLM-guided solver.
+# See README.md → "Starting the vLLM Server" for instructions.
+# Requires: ROCm 6.x, AMD GPU with ≥16 GB VRAM (tested on MI300X with 192 GB)
+# ──────────────────────────────────────────────
