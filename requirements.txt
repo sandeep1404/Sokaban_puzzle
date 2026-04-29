@@ -22,3 +22,13 @@ pdfplumber>=0.10.0
 # ──────────────────────────────────────────────
 
 ## install ollama for ollama as backend and mlx for mac systems
+
+ollama>=0.4.0
+
+
+# MLX backend — Apple Silicon GPU inference (M1/M2/M3/M4)
+
+mlx-lm>=0.3.0
+
+
+
