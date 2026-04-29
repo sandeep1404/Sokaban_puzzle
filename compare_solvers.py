@@ -22,7 +22,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 from environment import from_parsed
-from search import bfs_solve, BeamSearchSolver, AStarSolver
+from search import bfs_solve, BeamSearchSolver, AStarSolver, MCTSSolver
 from llm_predictor import LLMPredictor, VLLM_MODEL
 from representation import REPR_ANNOTATED
 from parser import load_and_parse_all
@@ -32,12 +32,13 @@ DEFAULT_PUZZLES = [0, 1, 5, 10, 20, 30, 50, 70, 90, 110]
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Compare BFS vs Beam vs A* on Sokoban.")
+    p = argparse.ArgumentParser(description="Compare BFS vs Beam vs A* vs MCTS on Sokoban.")
     p.add_argument("--puzzles", type=int, nargs="+", default=DEFAULT_PUZZLES)
     p.add_argument("--max-states",    type=int, default=10_000)
     p.add_argument("--max-llm-calls", type=int, default=10_000)
     p.add_argument("--beam-width",    type=int, default=20)
     p.add_argument("--batch-size",    type=int, default=16)
+    p.add_argument("--mcts-iterations", type=int, default=500)
     return p.parse_args()
 
 
@@ -94,6 +95,30 @@ def run_astar(puzzle_dict: dict, puzzle_idx: int,
                          llm_weight=0.3,
                          max_llm_calls=max_llm_calls,
                          batch_size=batch_size)
+    t0 = time.time()
+    raw = solver.solve(state)
+    return {
+        "puzzle_idx": puzzle_idx,
+        "solved":     raw["solved"],
+        "steps":      raw.get("steps"),
+        "llm_calls":  predictor.call_count,
+        "states":     raw.get("states_explored", 0),
+        "fallbacks":  raw.get("fallback_count", 0),
+        "time":       time.time() - t0,
+        "n_boxes":    len(puzzle_dict["box_positions"]),
+    }
+
+
+def run_mcts(puzzle_dict: dict, puzzle_idx: int,
+             predictor: LLMPredictor, n_iterations: int,
+             max_llm_calls: int) -> dict:
+    state = from_parsed(puzzle_dict)
+    predictor.reset_call_count()
+    solver = MCTSSolver(predictor,
+                        n_iterations=n_iterations,
+                        exploration_c=1.4,
+                        rollout_depth=30,
+                        max_llm_calls=max_llm_calls)
     t0 = time.time()
     raw = solver.solve(state)
     return {
@@ -232,11 +257,12 @@ def main():
     puzzle_dicts = [all_puzzles[i] for i in args.puzzles]
 
     print(SEPARATOR)
-    print("  SOLVER COMPARISON — BFS vs Beam Search vs A*")
+    print("  SOLVER COMPARISON — BFS vs Beam Search vs A* vs MCTS")
     print(f"  Puzzles     : {args.puzzles}")
     print(f"  max_states  : {args.max_states}")
     print(f"  max_llm_calls: {args.max_llm_calls}")
     print(f"  beam_width  : {args.beam_width}")
+    print(f"  mcts_iters  : {args.mcts_iterations}")
     print(f"  Model       : {VLLM_MODEL} (vLLM)")
     print(SEPARATOR)
 
@@ -244,7 +270,7 @@ def main():
 
     # ── 1. BFS (no LLM) ──────────────────────────────────────────
     print(f"\n{'─'*40}")
-    print("  [1/3] Running BFS (no LLM)...")
+    print("  [1/4] Running BFS (no LLM)...")
     print(f"{'─'*40}")
     bfs_results = []
     for i, (pidx, pd) in enumerate(zip(args.puzzles, puzzle_dicts)):
@@ -258,7 +284,7 @@ def main():
 
     # ── 2. Beam Search ────────────────────────────────────────────
     print(f"\n{'─'*40}")
-    print(f"  [2/3] Running Beam Search (width={args.beam_width}, vLLM)...")
+    print(f"  [2/4] Running Beam Search (width={args.beam_width}, vLLM)...")
     print(f"{'─'*40}")
     beam_predictor = LLMPredictor(model_name=VLLM_MODEL,
                                   backend="vllm",
@@ -277,7 +303,7 @@ def main():
 
     # ── 3. A* ─────────────────────────────────────────────────────
     print(f"\n{'─'*40}")
-    print("  [3/3] Running A* (vLLM-guided, batched)...")
+    print("  [3/4] Running A* (vLLM-guided, batched)...")
     print(f"{'─'*40}")
     astar_predictor = LLMPredictor(model_name=VLLM_MODEL,
                                    backend="vllm",
@@ -294,6 +320,25 @@ def main():
         astar_results.append(r)
     print_solver_table(astar_results, "A* (LLM-guided)")
     all_summaries["A* (LLM-guided)"] = compute_summary(astar_results)
+
+    # ── 4. MCTS ───────────────────────────────────────────────────
+    print(f"\n{'─'*40}")
+    print(f"  [4/4] Running MCTS (vLLM-guided, {args.mcts_iterations} iters)...")
+    print(f"{'─'*40}")
+    mcts_predictor = LLMPredictor(model_name=VLLM_MODEL,
+                                  backend="vllm",
+                                  repr_type=REPR_ANNOTATED)
+    mcts_results = []
+    for i, (pidx, pd) in enumerate(zip(args.puzzles, puzzle_dicts)):
+        print(f"  [{i+1}/{len(args.puzzles)}] Puzzle {pidx}...", end=" ", flush=True)
+        r = run_mcts(pd, pidx, mcts_predictor,
+                     n_iterations=args.mcts_iterations,
+                     max_llm_calls=args.max_llm_calls)
+        status = f"SOLVED in {r['steps']} steps" if r["solved"] else "FAILED"
+        print(f"{status}  |  {r['llm_calls']} LLM calls  |  {r['time']:.2f}s")
+        mcts_results.append(r)
+    print_solver_table(mcts_results, f"MCTS ({args.mcts_iterations} iters)")
+    all_summaries[f"MCTS ({args.mcts_iterations} iters)"] = compute_summary(mcts_results)
 
     # ── Final summary ─────────────────────────────────────────────
     print_comparison_table(all_summaries)

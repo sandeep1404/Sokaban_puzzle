@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from environment import SokobanState, from_parsed
-from search import bfs_solve, BeamSearchSolver, AStarSolver
+from search import bfs_solve, BeamSearchSolver, AStarSolver, MCTSSolver
 from llm_predictor import LLMPredictor
 from representation import REPR_ASCII, REPR_STRUCTURED, REPR_ANNOTATED
 from parser import load_and_parse_all
@@ -63,7 +63,6 @@ def evaluate_single(puzzle_idx: int,
             "n_targets"       : int
             "solution_path"   : list[str] | None
     """
-    # TODO: implement this (~25 lines)
 
     state = from_parsed(puzzle_dict)
 
@@ -167,7 +166,7 @@ def compute_summary(results: list[dict]) -> dict:
     RETURNS:
         dict with all the above keys
     """
-    # TODO: implement this (~20 lines)
+    
     
     total = len(results)
     solved_results = [r for r in results if r["solved"]]
@@ -436,16 +435,34 @@ if __name__ == "__main__":
     astar_summary = compute_summary(astar_results)
 
     # ------------------------------------------------------------------
+    # 3. MCTS — LLM-guided Monte Carlo Tree Search
+    # ------------------------------------------------------------------
+    print("\n" + "=" * 50)
+    print("Running MCTS (vLLM, LLM-guided) on puzzles", PUZZLES)
+    print("LLM model:", VLLM_MODEL)
+    print("=" * 50)
+    predictor.reset_call_count()
+    mcts_solver = MCTSSolver(predictor, n_iterations=500,
+                             exploration_c=1.4,
+                             rollout_depth=30,
+                             max_llm_calls=500)
+    mcts_results = evaluate_batch(all_puzzles, solver=mcts_solver,
+                                  solver_name="mcts_vllm", puzzle_indices=PUZZLES)
+    mcts_summary = compute_summary(mcts_results)
+
+    # ------------------------------------------------------------------
     # 4. Print comparison table
     # ------------------------------------------------------------------
     print()
     print("NOTE: bfs = pure BFS, zero LLM calls (baseline)")
     print("      astar_vllm = A* where EVERY state is LLM-guided (Qwen2.5-7B via vLLM)")
+    print("      mcts_vllm  = MCTS with LLM priors + heuristic rollouts")
     print("      llm_calls/puzzle shows LLM involvement in solving")
     print()
     print_summary_table({
         "bfs (no LLM)"  : bfs_summary,
         "astar_vllm"    : astar_summary,
+        "mcts_vllm"     : mcts_summary,
     })
 
     # ------------------------------------------------------------------
@@ -455,7 +472,8 @@ if __name__ == "__main__":
     plot_success_by_solver({
         "bfs (no LLM)": bfs_summary,
         "astar_vllm"  : astar_summary,
+        "mcts_vllm"   : mcts_summary,
     })
-    all_results = bfs_results + astar_results
+    all_results = bfs_results + astar_results + mcts_results
     plot_complexity_vs_steps(all_results)
     print("Plots saved to outputs/")

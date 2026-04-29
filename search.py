@@ -73,7 +73,6 @@ def bfs_solve(initial_state: SokobanState,
             "steps"       : int | None
             "states_explored": int
     """
-    # TODO: implement this (~30 lines)
 
     from collections import deque
     queue = deque()
@@ -185,7 +184,6 @@ class BeamSearchSolver:
             max_depth      : int — max steps before giving up
             max_llm_calls  : int — stop early if LLM calls exceed this
         """
-        # TODO: store all args as self attributes
         self.predictor = predictor
         self.beam_width = beam_width                                                                                                                                                                       
         self.max_depth = max_depth
@@ -204,8 +202,7 @@ class BeamSearchSolver:
                 "llm_calls" : int
                 "states_explored": int
         """
-        # TODO: implement the beam search loop described in the class docstring
-        # (~50 lines)
+      
 
         # llm_calls=0
         # states_explored=0
@@ -529,7 +526,6 @@ class MCTSNode:
 
     def q_value(self) -> float:
         """Average reward = total_reward / visit_count (0 if never visited)"""
-        # TODO: 1 line
         avg_reward = 0 
         if self.visit_count>0:
             avg_reward = self.total_reward/self.visit_count 
@@ -701,6 +697,15 @@ class MCTSSolver:
             node.total_reward += reward
             node = node.parent
 
+    def _extract_path(self, node: MCTSNode) -> list[str]:
+        """Walk from node back to root and return action sequence."""
+        path = []
+        while node.parent is not None:
+            path.append(node.action_taken)
+            node = node.parent
+        path.reverse()
+        return path
+
     def solve(self, initial_state: SokobanState) -> dict:
         """
         Run MCTS for n_iterations, then extract best path by following
@@ -709,6 +714,7 @@ class MCTSSolver:
         root = MCTSNode(state=initial_state)
         self._visited = {state_key(initial_state)}
         best_solution = None
+        states_explored = 0
 
         for i in range(self.n_iterations):
             if i % 50 == 0:
@@ -718,34 +724,24 @@ class MCTSSolver:
 
             # 1. Select
             leaf = self._select(root)
+            states_explored += 1
 
             if leaf.is_terminal:
-                # Check if it's a solved terminal
                 if is_solved(leaf.state):
-                    path = []
-                    node = leaf
-                    while node.parent is not None:
-                        path.append(node.action_taken)
-                        node = node.parent
-                    path.reverse()
+                    path = self._extract_path(leaf)
                     if best_solution is None or len(path) < len(best_solution):
                         best_solution = path
-                # Backprop and continue
                 reward = 1.0 if is_solved(leaf.state) else 0.0
                 self._backpropagate(leaf, reward)
                 continue
 
             # 2. Expand — always expand leaf nodes (don't wait for second visit)
             leaf = self._expand(leaf)
+            states_explored += len(leaf.parent.children) if leaf.parent and leaf.parent.children else 1
 
             # Check if expansion found solution
             if is_solved(leaf.state):
-                path = []
-                node = leaf
-                while node.parent is not None:
-                    path.append(node.action_taken)
-                    node = node.parent
-                path.reverse()
+                path = self._extract_path(leaf)
                 if best_solution is None or len(path) < len(best_solution):
                     best_solution = path
                 self._backpropagate(leaf, 1.0)
@@ -764,7 +760,8 @@ class MCTSSolver:
                 "path": best_solution,
                 "steps": len(best_solution),
                 "llm_calls": self.predictor.call_count,
-                "states_explored": root.visit_count,
+                "states_explored": states_explored,
+                "fallback_count": 0,
             }
 
         # Otherwise, extract most-visited path from root
@@ -779,7 +776,8 @@ class MCTSSolver:
                     "path": path,
                     "steps": len(path),
                     "llm_calls": self.predictor.call_count,
-                    "states_explored": root.visit_count,
+                    "states_explored": states_explored,
+                    "fallback_count": 0,
                 }
 
         return {
@@ -787,7 +785,8 @@ class MCTSSolver:
             "path": None,
             "steps": None,
             "llm_calls": self.predictor.call_count,
-            "states_explored": root.visit_count,
+            "states_explored": states_explored,
+            "fallback_count": 0,
         }
 
 

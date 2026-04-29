@@ -5,10 +5,11 @@ Usage:
     python solve_puzzle.py --puzzle 3 --solver bfs
     python solve_puzzle.py --puzzle 7 --solver beam
     python solve_puzzle.py --puzzle 7 --solver astar
+    python solve_puzzle.py --puzzle 0 --solver mcts
 
 Arguments:
     --puzzle  : 0-based puzzle index (e.g. 0 = first puzzle)
-    --solver  : one of  bfs | beam | astar
+    --solver  : one of  bfs | beam | astar | mcts
 """
 
 import argparse
@@ -16,7 +17,7 @@ import sys
 from pathlib import Path
 
 from environment import from_parsed, apply_action, is_solved, render
-from search import bfs_solve, BeamSearchSolver, AStarSolver
+from search import bfs_solve, BeamSearchSolver, AStarSolver, MCTSSolver
 from llm_predictor import LLMPredictor
 from parser import load_and_parse_all
 
@@ -29,8 +30,8 @@ def parse_args():
     parser.add_argument("--puzzle", type=int, required=True,
                         help="0-based puzzle index")
     parser.add_argument("--solver", type=str, required=True,
-                        choices=["bfs", "beam", "astar"],
-                        help="Solver to use: bfs | beam | astar")
+                        choices=["bfs", "beam", "astar", "mcts"],
+                        help="Solver to use: bfs | beam | astar | mcts")
     return parser.parse_args()
 
 
@@ -76,7 +77,10 @@ def main():
     else:
         predictor = LLMPredictor()
         if args.solver == "beam":
-            solver = BeamSearchSolver(predictor, beam_width=5, max_depth=200, max_llm_calls=10_000)
+            solver = BeamSearchSolver(predictor, beam_width=20, max_depth=300, max_llm_calls=20_000)
+        elif args.solver == "mcts":
+            solver = MCTSSolver(predictor, n_iterations=1000, exploration_c=1.4,
+                                rollout_depth=30, max_llm_calls=1_000)
         else:  # astar
             solver = AStarSolver(predictor, max_states=50_000, max_llm_calls=50_000, batch_size=16)
 
