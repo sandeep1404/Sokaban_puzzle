@@ -331,7 +331,7 @@ On your LAST line write exactly: ACTION: up  (or down, left, right)"""
 # QUICK SELF-TEST  — run: python representation.py
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    filepath = Path(__file__).parent.parent / "data" / "Microban.txt"
+    filepath = Path(__file__).parent / "data" / "Microban.txt"
     all_puzzles = load_and_parse_all(str(filepath))
     state = from_parsed(all_puzzles[0])
 
