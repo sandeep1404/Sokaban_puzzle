@@ -130,6 +130,6 @@ Puzzles are 0-indexed from Microban.txt (155 total). Default evaluation uses 10 
 
 - **LLM as one-step predictor only:** The LLM receives the current board state and outputs a single action. It is never used for multi-step lookahead.
 - **A* priority:** `f(n) = g(n) − h(n) − llm_boost(n)` where `h` is the sum of Manhattan distances from each unplaced box to its nearest target.
-- **Batched inference:** A* pops `batch_size=16` states at once and fires all LLM requests concurrently, reducing wall-clock time significantly.
+- **Batched inference:** A* pops `batch_size=16` states at wall-clock once and fires all LLM requests concurrently, reducing inferencetime significantly.
 - **State caching:** Identical board positions reuse the cached LLM prediction — no duplicate calls.
-- **Deadlock detection:** Corner-deadlock pruning eliminates states where a box is irreversibly stuck.
+- **Deadlock detection:** Corner-deadlock pruning eliminates states where a box is stuck.
