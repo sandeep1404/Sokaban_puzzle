@@ -28,7 +28,7 @@ Board State → Prompt Builder → vLLM (Qwen2.5-7B) → Action + Confidence
 | `environment.py` | Immutable `SokobanState`, action application, deadlock detection, heuristic |
 | `representation.py` | Three LLM prompt formats: ASCII, Structured, Annotated |
 | `llm_predictor.py` | vLLM client, batch inference, logprob scoring, state cache |
-| `search.py` | BFS baseline, Beam Search, A* with LLM guidance |
+| `search.py` | BFS baseline, Beam Search, A* with LLM guidance, MCTS |
 | `evaluation.py` | Batch evaluation, metrics, plots |
 
 ### 1.3 LLM Integration
@@ -99,7 +99,7 @@ All three representations were tested with A* on the same 10 puzzles (max 20,000
 
 **Finding:** All three representations achieved identical accuracy (80%) with the same 8 puzzles solved and the same 2 failures (puzzles 5 and 110). Step counts and state counts are nearly identical across representations.
 
-**Interpretation:** Qwen2.5-7B is robust to representation format at this difficulty level. The two failures are **budget-constrained** (both hit the 20k cap), not representation-dependent. The model's spatial reasoning is sufficient to interpret any of the three formats.
+**Interpretation:** Qwen2.5-7B is robust to representation format at this difficulty level. The two failures are **budget-constrained** (both hit the 20k state limit), not representation-dependent. The model's spatial reasoning is sufficient to interpret any of the three formats.
 
 **When representation would matter:** Differences would emerge at the margin — puzzles where one representation gives just enough extra signal to tip the solver over the budget threshold. With the current puzzle set, no puzzle is at that margin.
 
@@ -176,7 +176,7 @@ Experiment settings: 10 puzzles [0,1,5,10,20,30,50,70,90,110], `max_states=10,00
 
 **Key observations:**
 
-1. **A* achieves the highest accuracy (70%) under a tight 10k state budget.** BFS (60%), beam search (40%), and MCTS (30%) all score lower. This directly demonstrates LLM guidance value: A* and BFS explore nearly identical state counts (~4,400–4,500 avg) but A* solves one extra puzzle — the LLM steers it toward the solution before the cap is hit.
+1. **Astar achieves the highest accuracy (70%) under a tight 10k state budget.** BFS (60%), beam search (40%), and MCTS (30%) all score lower. This directly demonstrates LLM guidance value: A* and BFS explore nearly identical state counts (~4,400–4,500 avg) but A* solves one extra puzzle — the LLM steers it toward the solution before the cap is hit.
 
 2. **BFS drops to 60% under the 10k budget** (from 90% at 50k budget). Its failures are purely budget-constrained — it ran out of states before finding solutions on harder puzzles. With an unlimited budget, BFS would eventually solve all these puzzles.
 
@@ -356,38 +356,8 @@ Migrated to a local vLLM server on AMD Instinct MI300X (192 GB HBM3). This was t
 
 ---
 
-### Experiment 8 — State Representation Comparison (A*, 10 Puzzles, 20k Budget)
 
-All three representations tested with A* on the same 10 puzzles (`max_states=20,000`, `max_llm_calls=20,000`).
-
-**Summary:**
-
-| Representation | Solved | Accuracy | Avg Steps | Avg States | Avg LLM Calls | Avg Time |
-|---|---|---|---|---|---|---|
-| ASCII (raw grid) | 8/10 | 80.0% | 45.0 | 6,594 | 6,594 | 68.23s |
-| Structured (text description) | 8/10 | 80.0% | 45.0 | 6,608 | 6,608 | 63.30s |
-| Annotated (grid + hints) | 8/10 | 80.0% | 45.0 | 6,592 | 6,592 | 67.61s |
-
-**Per-puzzle breakdown (all representations fail on the same puzzles):**
-
-| Puzzle | Boxes | Solved | Steps | States | Note |
-|---|---|---|---|---|---|
-| 0 | 2 | ✅ | 33 | 184 | Easy — solved in ~3s |
-| 1 | 3 | ✅ | 16 | 572–588 | Easy-medium |
-| 5 | 3 | ❌ | — | 20,001 | Hit 20k cap — all 3 representations fail identically |
-| 10 | 2 | ✅ | 78 | 2,245–2,256 | Medium |
-| 20 | 2 | ✅ | 17 | 175 | Easy |
-| 30 | 3 | ✅ | 17 | 1,008 | Medium |
-| 50 | 2 | ✅ | 34 | 505 | Medium |
-| 70 | 2 | ✅ | 120 | 11,601 | Hard — near cap |
-| 90 | 4 | ✅ | 45 | 9,596–9,756 | Hard |
-| 110 | 6 | ❌ | — | 20,014 | Hit 20k cap — all 3 representations fail identically |
-
-**Finding:** All representations are completely equivalent for Qwen2.5-7B. The two failures (puzzles 5 and 110) are budget-constrained, not representation-dependent. The model is robust to prompt format.
-
----
-
-### Experiment 9 — Final Solver Comparison (10 Puzzles, 10k Budget)
+### Experiment 8 — Final Solver Comparison (10 Puzzles, 10k Budget)
 
 Definitive four-way comparison under controlled budget (`max_states=10,000`, `max_llm_calls=10,000`, `beam_width=20`, `mcts_iterations=500`).
 
@@ -501,13 +471,13 @@ The key design insight is that **search provides the safety net**: even if the L
 
 ### 7.2 Computational trade-offs of the search strategy
 
-**A* vs BFS:**
+**Astar vs BFS:**
 - Under **tight budget (10k states)**: A* (70%) outperforms BFS (60%) — the LLM steers toward solutions before the cap is hit
 - Under **loose budget (50k states)**: BFS (90%) outperforms A* (80%) — completeness wins when budget is not a constraint
 - A* is 1,400x slower per puzzle (44s vs 0.03s) due to ~4,432 LLM HTTP calls per puzzle
 - The break-even point is when LLM guidance saves enough states to compensate for its latency — roughly at the medium-difficulty puzzles in this set
 
-**A* vs Beam Search:**
+**Astar vs Beam Search:**
 - A* is more accurate because it never permanently prunes states
 - Beam search is faster but fails on puzzles requiring counter-intuitive moves
 - The completeness guarantee of A* is critical for Sokoban
@@ -523,7 +493,7 @@ The key design insight is that **search provides the safety net**: even if the L
 **Different architectures:**
 - **MCTS with LLM rollout policy:** Use the LLM as the rollout policy (plays out random games) and UCB for exploration. Better exploration-exploitation balance than A*.
 - **Fine-tuned model:** Train Qwen2.5-7B specifically on Sokoban state-action pairs using supervised learning or RL. A Sokoban-specific model would make far fewer incorrect predictions.
-- **RL training (optional assignment component):** Use REINFORCE or PPO with the LLM as policy. Reward signal: +1 for solving, −0.01 per step (encourages shorter solutions). A fine-tuned model would likely reduce states explored by 10–100x on medium puzzles.
+- **RL training (optional assignment component):** Use GRPO or PPO with the LLM as policy. Reward signal: +1 for solving, −0.01 per step (encourages shorter solutions). A fine-tuned model would likely reduce states explored by 10–100x on medium puzzles.
 - **Smaller model + caching:** Qwen2.5-3B would be ~2x faster at inference with some accuracy loss. Combined with aggressive state caching (many states are revisited), could reduce wall-clock time significantly.
 
 ---
@@ -532,7 +502,7 @@ The key design insight is that **search provides the safety net**: even if the L
 
 The system evolved through multiple iterations — from a Groq-backed prototype to a production vLLM pipeline on AMD MI300X — with comprehensive experiments across models, backends, algorithms, and representations. Four search strategies (BFS, Beam Search, A*, MCTS) were implemented and compared. Key findings:
 
-1. **Under a tight 10k state budget, A* with LLM guidance achieves the highest accuracy (70%)**, outperforming BFS (60%), Beam Search (40%), and MCTS (30%). The LLM's guidance allows A* to find solutions that BFS misses within the same state budget.
+1. **Under a tight 10k state budget, Astar with LLM guidance achieves the highest accuracy (70%)**, outperforming BFS (60%), Beam Search (40%), and MCTS (30%). The LLM's guidance allows Astar to find solutions that BFS misses within the same state budget.
 
 2. **Budget sensitivity is the dominant factor for BFS.** At 50k budget BFS achieves 90%; at 10k it drops to 60%. The LLM provides a real advantage under constrained computation, but BFS wins at unlimited budget due to completeness.
 
@@ -544,4 +514,4 @@ The system evolved through multiple iterations — from a Groq-backed prototype 
 
 6. **Inference latency is the dominant cost.** The pipeline evolved from ~1,000s/puzzle (Groq) → 219s (vLLM default) → 32s (vLLM optimized) — a 31× improvement. Key optimizations: reducing `max_tokens` from 20 to 8, increasing `batch_size` to 64, capping state budget.
 
-7. **A* with LLM guidance is the correct algorithmic choice.** Its completeness guarantee ensures failures are always budget-related, not structural. The LLM biases exploration order toward solutions without eliminating any candidate — the search algorithm provides the safety net that makes it robust to LLM errors.
+7. **Astar with LLM guidance is the correct algorithmic choice.** Its completeness guarantee ensures failures are always budget-related, not structural. The LLM biases exploration order toward solutions without eliminating any candidate — the search algorithm provides the safety net that makes it robust to LLM errors.
