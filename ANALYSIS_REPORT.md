@@ -4,7 +4,7 @@
 **Final Hardware:** AMD Instinct MI300X (192 GB HBM3), ROCm 7.2, vLLM with continuous batching, Qwen2.5-7B-Instruct.  
 **Backends explored:** Groq API → MLX (Apple Silicon) → vLLM (AMD MI300X).  
 **Models explored:** Qwen2.5-1.5B, Qwen2.5-3B, Qwen2.5-7B, Claude Sonnet 4.6.  
-**Dataset:** David Skinner's Microban collection (155 puzzles). Final evaluation: 10 puzzles spanning easy to hard: indices [0, 1, 5, 10, 20, 30, 50, 70, 90, 110].
+**Dataset:** David Skinner's Microban collection ([Link](http://www.abelmartin.com/rj/sokobanJS/Skinner/David%20W.%20Skinner%20-%20Sokoban_files/Microban.txt)). Final evaluation: 10 puzzles spanning easy to hard: indices [0, 1, 5, 10, 20, 30, 50, 70, 90, 110].
 
 ---
 
