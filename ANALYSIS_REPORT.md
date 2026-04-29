@@ -4,7 +4,7 @@
 **Final Hardware:** AMD Instinct MI300X (192 GB HBM3), ROCm 7.2, vLLM with continuous batching, Qwen2.5-7B-Instruct.  
 **Backends explored:** Groq API → MLX (Apple Silicon) → vLLM (AMD MI300X).  
 **Models explored:** Qwen2.5-1.5B, Qwen2.5-3B, Qwen2.5-7B, Claude Sonnet 4.6.  
-**Dataset:** David Skinner's Microban collection ([Link](http://www.abelmartin.com/rj/sokobanJS/Skinner/David%20W.%20Skinner%20-%20Sokoban_files/Microban.txt)). Final evaluation: 10 puzzles spanning easy to hard: indices [0, 1, 5, 10, 20, 30, 50, 70, 90, 110].
+**Dataset:** David Skinner's Microban collection ([Link](http://www.abelmartin.com/rj/sokobanJS/Skinner/David%20W.%20Skinner%20-%20Sokoban_files/Microban.txt)). Final evaluation: 10 puzzles spanning easy to hard: puzzle indices [0, 1, 5, 10, 20, 30, 50, 70, 90, 110].
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 1.1 Overall Design
 
-The system follows a strict constraint: **the LLM is used only as a one-step predictor**. At each board state, it receives a prompt describing the current configuration and outputs a single action (`up`, `down`, `left`, `right`). The tree search algorithm decides which states to visit and when to call the LLM — the LLM never plans ahead or reasons about future states.
+The system follows a strict constraint: **the LLM is used only as a one-step predictor**. At each board state, it receives a prompt describing the current configuration and outputs a single best action (`up`, `down`, `left`, `right`) from the current state to reach the goal. The tree search algorithm decides which states to visit and when to call the LLM — the LLM never plans ahead or reasons about future states.
 
 ```
 Board State → Prompt Builder → vLLM (Qwen2.5-7B) → Action + Confidence
@@ -40,7 +40,7 @@ The LLM receives the full board prompt and the server returns logprobs over outp
 priority = g_cost - heuristic_score(state) - llm_weight * llm_prob - push_bonus
 ```
 
-The LLM probability (`llm_prob`) acts as a small tiebreaker. If the LLM is wrong, the correct path is still explored — just slightly later.
+The LLM probability (`llm_prob`) acts as a small tiebreaker. If the LLM is wrong, the correct path is still explored — just slightly later by considering the valid actions as the fallback.
 
 ---
 
@@ -56,13 +56,15 @@ Raw board grid using standard Sokoban symbols:
 #  ###
 #*@  #
 #  $ #
+#  ###
+####
 ```
 
 ### Structured
 Coordinate-based text description with no grid:
 ```
 Board size: 7 rows x 6 cols
-Player position: row 3, col 2
+Player position: row 3, col 2 (index starts from 0)
 Box positions: [(3, 1), (4, 3)]
 Target positions: [(1, 2), (3, 1)]
 Unplaced boxes: [(4, 3)]
@@ -74,7 +76,11 @@ ASCII grid augmented with Manhattan distance hints:
 ```
 ####
 # .#
-...
+#  ###
+#*@  #
+#  $ #
+#  ###
+####
 --- Hints ---
 Player is at (3, 2).
 Box at (4, 3) → nearest target at (1, 2), distance 4 steps.
@@ -110,7 +116,7 @@ Standard breadth-first search exploring all reachable states. Complete within it
 **Properties:**
 - Zero LLM calls → negligible latency per state
 - Explores states in order of path length (optimal solution length)
-- Fails only when the budget cap is hit before the solution is found
+- Fails only when the budget cap (max_states) is hit before the solution is found
 
 ### 3.2 Beam Search (LLM-guided)
 
@@ -119,7 +125,7 @@ Maintains a fixed-size "beam" of the top-k states at each depth level. LLM ranks
 **Properties:**
 - Permanently prunes states — cannot recover from bad pruning decisions
 - Sokoban requires counter-intuitive moves (pushing boxes *away* from goals to set up future pushes); beam search scores these moves low and discards them
-- Memory efficient but fundamentally incomplete
+- Memory efficient but fundamentally incomplete since once its discards any move it cannot visit the same state back again since it will discard that move.
 
 ### 3.3 A* (LLM-guided, batched)
 
@@ -138,7 +144,7 @@ Experiment settings: 10 puzzles [0,1,5,10,20,30,50,70,90,110], `max_states=10,00
 | Solver | Solved | Accuracy | Avg Steps | Avg States | Avg LLM Calls | Avg Time |
 |---|---|---|---|---|---|---|
 | BFS (no LLM) | 6/10 | 60.0% | 32.5 | 4,485 | 0 | 0.03s |
-| Beam Search (w=20) | 4/10 | 40.0% | 20.8 | 1,728 | 678 | 5.63s |
+| Beam Search (beam width=20) | 4/10 | 40.0% | 20.8 | 1,728 | 678 | 5.63s |
 | A* (LLM-guided) | 7/10 | 70.0% | 34.3 | 4,432 | 4,432 | 44.28s |
 
 **Key observations:**
@@ -183,9 +189,10 @@ The first working end-to-end pipeline used Groq's cloud API (`llama-3.1-8b-insta
 
 **Problem:** Groq rate-limiting caused A* to reach ~1,000s per puzzle at scale. The remote API inference time dominated all other costs. **Decision: migrate to local inference.**
 
+![vLLM Inference Speedup](outputs/vllm_speedup_comparison.png)
 ---
 
-### Experiment 2 — Model Size Study (1.5B vs 3B, MLX Backend)
+### Experiment 2 — Model Size Study (1.5B vs 3B, MLX Backend on 10 puzzles [0,1,2,3,4,5,6,7,8,9])
 
 Tested two smaller Qwen models locally via MLX on a small puzzle set to understand the accuracy-speed trade-off before committing to a full evaluation.
 
@@ -215,12 +222,16 @@ Tested two smaller Qwen models locally via MLX on a small puzzle set to understa
 
 **Key findings:**
 - 1.5B with A* matched BFS (80%) at this puzzle set, but beam search performance was very weak
-- 3B improved beam search from 20% → 40%, showing model quality matters for beam search more than for A*
-- A* matched or approached BFS accuracy regardless of model size — the search algorithm provides the safety net
+- 3B improved beam search from 30% → 40%.
+- As the beam width gets increasing from 10 to 25 the avg time significantly incresed since the search space got increased.
 
 ---
+### Sub Experiment with 7B model and Mlx as backend
 
-### Experiment 3 — MCTS Trial (1.5B, beam_width=25)
+- I also tried using qwen2.5-7B-Instruct model and deepseek-r1:8b model using ollama, mlx and mlx_cached as the backend but all the experiments failed to solve the puzzle and also took longer inference time more than 40 mins for a single puzzle to get it solved.
+
+---
+### Experiment 3 — MCTS Trial (1.5B, beam_width=25, on 10 puzzles [0,1,2,3,4,5,6,7,8,9])
 
 MCTS was added as a fourth solver alongside BFS, Beam Search, and A*.
 
@@ -235,7 +246,7 @@ MCTS was added as a fourth solver alongside BFS, Beam Search, and A*.
 
 ---
 
-### Experiment 4 — Claude Sonnet 4.6 Backend
+### Experiment 4 — Claude Sonnet 4.6 Backend on 10 puzzles [0,1,2,3,4,5,6,7,8,9]
 
 Tested Claude Sonnet 4.6 as the LLM backbone (beam search excluded due to rate limits).
 
@@ -248,7 +259,7 @@ Tested Claude Sonnet 4.6 as the LLM backbone (beam search excluded due to rate l
 
 ---
 
-### Experiment 5 — BFS Scaling: All 155 Puzzles
+### Experiment 5 — BFS Scaling: All 155 Puzzles with max_states = 50k
 
 BFS (no LLM) was run on all 155 Microban puzzles to understand the true baseline difficulty distribution.
 
@@ -303,7 +314,7 @@ Migrated to a local vLLM server on AMD Instinct MI300X (192 GB HBM3). This was t
 | BFS | 9/10 | 90.0% | 0 | 0.08s |
 | A* (vLLM, optimized) | 7/10 | 70.0% | 4,448 | 32.68s |
 
-![vLLM Inference Speedup](outputs/vllm_speedup_comparison.png)
+
 
 **Key improvements:**
 - Reducing `max_tokens` from 20 to 8: LLM only needs to output one direction word — shorter output = faster generation
