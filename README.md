@@ -8,7 +8,10 @@ A tree-based planning system that uses an LLM as a one-step action predictor to 
 
 - Python 3.10+
 - AMD GPU with ROCm 6.x (tested on MI300X, 192 GB VRAM) — or any CUDA GPU with ≥16 GB VRAM
-- vLLM installed system-wide (see below)
+- PreInstalled vLLM Image from ([Link]([url](https://amd.digitalocean.com/)))
+
+<img width="1917" height="1001" alt="image" src="https://github.com/user-attachments/assets/fdda4414-3611-4d5e-a6d2-3212145015d8" />
+
 
 ---
 
