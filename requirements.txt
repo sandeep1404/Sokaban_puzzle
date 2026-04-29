@@ -20,3 +20,5 @@ pdfplumber>=0.10.0
 # See README.md → "Starting the vLLM Server" for instructions.
 # Requires: ROCm 6.x, AMD GPU with ≥16 GB VRAM (tested on MI300X with 192 GB)
 # ──────────────────────────────────────────────
+
+## install ollama for ollama as backend and mlx for mac systems
